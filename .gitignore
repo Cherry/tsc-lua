@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+*.tgz
+
+# Upstream TypeScript checkout (fetched by scripts/fetch-upstream.sh)
+upstream/
+
+# Logs and caches
+*.log
+.eslintcache
+coverage/
+
+# OS files
+.DS_Store
+desktop.ini
+
+# Claude
+.claude/settings.local.json

@@ -1,0 +1,74 @@
+{
+	"name": "tsc-lua",
+	"version": "0.0.0-semantically-released",
+	"description": "The TypeScript 7 compiler, ported to Lua and run on LuaJIT",
+	"keywords": [
+		"typescript",
+		"tsc",
+		"compiler",
+		"lua",
+		"typescript-7"
+	],
+	"homepage": "https://github.com/Cherry/tsc-lua#readme",
+	"bugs": {
+		"url": "https://github.com/Cherry/tsc-lua/issues"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Cherry/tsc-lua.git"
+	},
+	"license": "MIT",
+	"author": "James Ross <james@jross.me>",
+	"type": "module",
+	"sideEffects": false,
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"bin": {
+		"tsc-lua": "dist/bin.js"
+	},
+	"files": [
+		"dist",
+		"THIRD_PARTY_NOTICES.txt"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json",
+		"check-types": "tsc --noEmit",
+		"lint": "eslint . && node scripts/lint-lua.ts",
+		"lint:fix": "eslint . --fix && node scripts/lint-lua.ts --fix",
+		"postinstall": "node -e \"require('node:fs').existsSync('dist/install.js')&&import('./dist/install.js')\"",
+		"prepack": "npm run build",
+		"test": "vitest run"
+	},
+	"engines": {
+		"node": ">=20"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"devDependencies": {
+		"@johnnymorganz/stylua-bin": "2.5.2",
+		"@nodecraft/eslint-config": "52.2.0",
+		"@semantic-release/exec": "7.1.0",
+		"@stylistic/eslint-plugin": "5.10.0",
+		"@types/luaparse": "0.2.13",
+		"@types/node": "26.6.5",
+		"@vitest/eslint-plugin": "1.6.27",
+		"eslint": "10.12.0",
+		"eslint-plugin-import-newlines": "2.0.0",
+		"eslint-plugin-import-x": "4.17.1",
+		"eslint-plugin-n": "18.4.1",
+		"eslint-plugin-regexp": "3.3.1",
+		"eslint-plugin-unicorn": "76.0.0",
+		"luaparse": "0.3.1",
+		"semantic-release": "25.0.9",
+		"typescript": "6.0.3",
+		"typescript-eslint": "8.71.1",
+		"vitest": "5.0.3"
+	}
+}

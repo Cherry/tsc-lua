@@ -1,0 +1,3 @@
+-Ivendor/luajit/src
+-std=gnu11
+-DLUAJIT_ENABLE_LUA52COMPAT
