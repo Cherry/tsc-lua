@@ -29,7 +29,7 @@ The npm package installs a standalone executable for your platform through optio
 
 | Platform | Package |
 | --- | --- |
-| Windows x64, arm64 | `@tsc-lua/win32-x64`, `@tsc-lua/win32-arm64` |
+| Windows x64 (arm64 runs it under emulation) | `@tsc-lua/win32-x64` |
 | macOS x64, arm64 | `@tsc-lua/darwin-x64`, `@tsc-lua/darwin-arm64` |
 | Linux x64, arm64 (glibc) | `@tsc-lua/linux-x64`, `@tsc-lua/linux-arm64` |
 | Linux x64, arm64 (musl, e.g. Alpine) | `@tsc-lua/linux-x64-musl`, `@tsc-lua/linux-arm64-musl` |

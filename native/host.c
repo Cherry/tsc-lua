@@ -24,21 +24,18 @@ int luaopen_tscnative(lua_State *L);
 #ifndef TSCLUA_ARCHIVE_PATH
 #define TSCLUA_ARCHIVE_PATH "build/archive.bin"
 #endif
+/* TSCLUA_SECTION is the whole directive that switches to the platform's read-only data section. */
 #if defined(__APPLE__)
 #define TSCLUA_SECTION ".const_data"
 #define TSCLUA_SYM(x) "_" #x
 #elif defined(_WIN32)
-#define TSCLUA_SECTION ".rdata,\"dr\""
+#define TSCLUA_SECTION ".section .rdata,\"dr\""
 #define TSCLUA_SYM(x) #x
 #else
 #define TSCLUA_SECTION ".section .rodata"
 #define TSCLUA_SYM(x) #x
 #endif
-#if defined(__APPLE__)
 __asm__(TSCLUA_SECTION "\n"
-#else
-__asm__(".section " TSCLUA_SECTION "\n"
-#endif
 	".globl " TSCLUA_SYM(tsclua_archive) "\n"
 	".balign 16\n"
 	TSCLUA_SYM(tsclua_archive) ":\n"

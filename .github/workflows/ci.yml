@@ -121,9 +121,6 @@ jobs:
           - os: windows-2025
             target: win32-x64
             cc: gcc
-          - os: windows-11-arm
-            target: win32-arm64
-            cc: clang
     runs-on: ${{ matrix.os }}
     name: Build ${{ matrix.target }}
     defaults:

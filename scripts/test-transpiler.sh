@@ -7,6 +7,7 @@ if pwd -W >/dev/null 2>&1; then
 	ROOT="$(cd "$ROOT" && pwd -W)"
 fi
 LUA="${LUA:-luajit}"
+mkdir -p "$ROOT/build/test"
 cd "$ROOT/transpiler"
 names=("$@")
 if [ ${#names[@]} -eq 0 ]; then

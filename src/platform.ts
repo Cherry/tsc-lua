@@ -14,8 +14,16 @@ export const platformPackages: Record<string, string> = {
 	'linux-arm64-musl': '@tsc-lua/linux-arm64-musl',
 	'linux-x64': '@tsc-lua/linux-x64',
 	'linux-x64-musl': '@tsc-lua/linux-x64-musl',
-	'win32-arm64': '@tsc-lua/win32-arm64',
 	'win32-x64': '@tsc-lua/win32-x64',
+};
+
+/**
+ * Platforms without a build of their own that run another platform's executable: Windows on Arm
+ * runs x64 executables under emulation. npm skips that package (its cpu does not match), so the
+ * install script downloads it.
+ */
+const emulatedPlatforms: Record<string, string> = {
+	'win32-arm64': 'win32-x64',
 };
 
 /** Reports whether this process runs on musl libc, where glibc executables cannot start. */
@@ -38,7 +46,7 @@ export function binaryName(platform: string = process.platform): string {
 
 export function platformPackage(platform: string = process.platform, arch: string = process.arch, musl: boolean = platform === 'linux' && isMusl()): string {
 	const key = platformKey(platform, arch, musl);
-	const pkg = platformPackages[key];
+	const pkg = platformPackages[emulatedPlatforms[key] ?? key];
 	if (!pkg) {
 		throw new Error(`tsc-lua: unsupported platform ${key}`);
 	}

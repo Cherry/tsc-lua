@@ -55,6 +55,10 @@ describe('platform packages', () => {
 		expect(platformPackage('linux', 'arm64', false)).toBe('@tsc-lua/linux-arm64');
 	});
 
+	it('runs the x64 build on Windows on Arm, under emulation', () => {
+		expect(platformPackage('win32', 'arm64')).toBe('@tsc-lua/win32-x64');
+	});
+
 	it('rejects unsupported platforms', () => {
 		expect(() => platformPackage('aix', 'ppc64')).toThrow('unsupported platform');
 	});
