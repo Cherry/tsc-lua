@@ -15,7 +15,7 @@ mkdir -p repos logs
 cp "$ROOT/.npmrc" .npmrc
 npm i -q --no-audit --no-fund typescript@7.0.2 ts6@npm:typescript@6.0.3 tsc-rs@0.7.0
 npm i -q --no-audit --no-fund tsrs@0.14.1-ts7.1.0-dev.20260929 || echo "tsrs: not installable" >&2
-npm i -q --no-audit --no-fund tsc-ts@0.0.0 || echo "tsc-ts: not installable" >&2
+npm i -q --no-audit --no-fund tsc-ts@0.0.2 || echo "tsc-ts: not installable" >&2
 npm ls --depth 0 >logs/compilers.txt
 
 checkout() { # name url sha

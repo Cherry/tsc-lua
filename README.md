@@ -1,13 +1,17 @@
 # tsc-lua
 
-[![CI](https://github.com/Cherry/tsc-lua/actions/workflows/ci.yml/badge.svg)](https://github.com/Cherry/tsc-lua/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/tsc-lua)](https://www.npmjs.com/package/tsc-lua)
+[![npm version](https://img.shields.io/npm/v/tsc-lua)](https://www.npmjs.com/package/tsc-lua)
+[![CI](https://github.com/Cherry/tsc-lua/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Cherry/tsc-lua/actions/workflows/ci.yml)
+[![license](https://img.shields.io/npm/l/tsc-lua)](./LICENSE)
 
 The TypeScript 7 compiler (`tsc`), ported to Lua and run on LuaJIT 2.1.
 
 TypeScript 7 is the native port of the TypeScript compiler, written in Go. tsc-lua runs that exact compiler as Lua: the Go sources are translated by a purpose built Go to Lua transpiler (`transpiler/`), and run on a small Lua runtime that implements Go's semantics (`runtime/`). Because it is the same compiler, it reports the same diagnostics and emits the same output as `tsc` from TypeScript 7, and it is checked against TypeScript's own baseline test suite.
 
 This is a for-fun project. It is much slower than the Go compiler; see [Benchmarks](#benchmarks).
+
+> [!NOTE]
+> **Heads-up:** this project was primarily AI-authored. The transpiler, runtime, tooling, and this README were written by AI coding agents in interactive sessions, with a human operator directing the work, reviewing output, and validating it against TypeScript's conformance suite and real projects. Read the code before trusting it in production.
 
 ## Status
 
@@ -116,7 +120,7 @@ Measured on Windows 11 with an AMD Ryzen 7 3700X (8 cores, 16 threads) and 32 GB
 
 Lua tables cost more than Go structs, and LuaJIT's garbage collector is incremental only (not generational), so it lets garbage build up further before collecting. The collector settings trade speed for memory: on tRPC, `TSCLUA_GC_PAUSE=175 TSCLUA_GC_STEPMUL=600` takes about 6% longer for an 11% lower peak, and `TSCLUA_GC_PAUSE=125 TSCLUA_GC_STEPMUL=800` about 45% longer for 25% less. Storing struct fields and slice headers in array slots and keeping closures out of hot loops (which LuaJIT's JIT cannot compile) made tsc-lua about 30% faster and cut Excalidraw's peak from 7.6 GB to 4.9 GB.
 
-Not measured yet: [tsrs](https://www.npmjs.com/package/tsrs) has no Windows build, the published [tsc-ts](https://github.com/vercel-labs/tsc-ts) releases were too new for this repository's 3 day package age policy, and the Sentry and VS Code apps, which take tsc-lua well over an hour each.
+Not measured yet: [tsrs](https://www.npmjs.com/package/tsrs) has no Windows build, [tsc-ts](https://github.com/vercel-labs/tsc-ts) 0.0.2 (its first release with executables) passes this repository's 3 day package age policy on 2026-10-20, and the Sentry and VS Code apps, which take tsc-lua well over an hour each.
 
 ### Method
 
