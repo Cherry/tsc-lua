@@ -89,18 +89,19 @@ The transpiler has its own tests (`transpiler/testdata/`): Go programs whose out
 
 Seconds for a full type check (`--noEmit`), median of 5 runs after a warm up (tsc-lua: median of 3). Every compiler reported 0 errors on every app, the same as `tsc` 7.
 
-| App | tsc 6 | tsc 7 | tsc-rs | tsc-rs `--fast` | bun check | tsc-lua |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| tRPC | 2.91 | 0.46 | 0.29 | 0.29 | 0.21 | 12.3 |
-| TypeORM | 11.29 | 1.47 | 0.87 | 0.71 | 0.40 | 43.8 |
-| Excalidraw | 14.13 | 1.97 | 1.50 | 1.71 | 0.52 | 97.5 |
-| Playwright | 12.05 | 1.67 | 0.85 | 0.73 | 0.50 | 52.5 |
-| **vs tsc 7 (geometric mean)** | **7.1× slower** | **1×** | **1.6× faster** | **1.7× faster** | **3.2× faster** | **33× slower** |
+| App | tsc 6 | tsc 7 | tsc-rs | tsc-rs `--fast` | bun check | tsc-ts | tsc-lua |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| tRPC | 2.91 | 0.46 | 0.29 | 0.29 | 0.21 | 0.49 | 12.3 |
+| TypeORM | 11.29 | 1.47 | 0.87 | 0.71 | 0.40 | 1.56 | 43.8 |
+| Excalidraw | 14.13 | 1.97 | 1.50 | 1.71 | 0.52 | 1.87 | 97.5 |
+| Playwright | 12.05 | 1.67 | 0.85 | 0.73 | 0.50 | 1.46 | 52.5 |
+| **vs tsc 7 (geometric mean)** | **7.1× slower** | **1×** | **1.6× faster** | **1.7× faster** | **3.2× faster** | **1×** | **33× slower** |
 
 ```
 tsc-lua      ████████████████████████████████████████  33×
 tsc 6        █████████                                 7.1×
 tsc 7        ▏                                           1×
+tsc-ts       ▏                                           0.98×
 tsc-rs       ▏                                           0.62×
 tsc-rs fast  ▏                                           0.58×
 bun check    ▏                                           0.31×
@@ -108,19 +109,19 @@ bun check    ▏                                           0.31×
 
 Peak memory in MB (the largest peak working set of the compiler's processes, from the warm up run):
 
-| App | tsc 6 | tsc 7 | tsc-rs | tsc-rs `--fast` | bun check | tsc-lua |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| tRPC | 445 | 288 | 203 | 193 | 220 | 865 |
-| TypeORM | 881 | 964 | 507 | 599 | 273 | 2,313 |
-| Excalidraw | 1,061 | 1,034 | 603 | 896 | 380 | 4,893 |
-| Playwright | 1,181 | 1,070 | 694 | 1,030 | 418 | 3,358 |
-| **vs tsc 7 (geometric mean)** | **1.1×** | **1×** | **0.61×** | **0.77×** | **0.42×** | **3.2×** |
+| App | tsc 6 | tsc 7 | tsc-rs | tsc-rs `--fast` | bun check | tsc-ts | tsc-lua |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| tRPC | 445 | 288 | 203 | 193 | 220 | 269 | 865 |
+| TypeORM | 881 | 964 | 507 | 599 | 273 | 650 | 2,313 |
+| Excalidraw | 1,061 | 1,034 | 603 | 896 | 380 | 1,028 | 4,893 |
+| Playwright | 1,181 | 1,070 | 694 | 1,030 | 418 | 1,074 | 3,358 |
+| **vs tsc 7 (geometric mean)** | **1.1×** | **1×** | **0.61×** | **0.77×** | **0.42×** | **0.89×** | **3.2×** |
 
-Measured on Windows 11 with an AMD Ryzen 7 3700X (8 cores, 16 threads) and 32 GB of RAM, on 2026-10-18. Versions: `typescript` 7.0.2 and 6.0.3 (Node.js 26.12.0, `--max-old-space-size=16384`), `tsc-rs` 0.7.0, bun 1.4.4, and tsc-lua at the pinned commit. tsc-lua runs on one core while the others use all of them; most of the gap is Lua itself, and the rest is that parallelism.
+Measured on Windows 11 with an AMD Ryzen 7 3700X (8 cores, 16 threads) and 32 GB of RAM, on 2026-10-18. Versions: `typescript` 7.0.2 and 6.0.3 (Node.js 26.12.0, `--max-old-space-size=16384`), `tsc-rs` 0.7.0, `tsc-ts` 0.0.3, bun 1.4.4, and tsc-lua at the pinned commit. tsc-lua runs on one core while the others use all of them; most of the gap is Lua itself, and the rest is that parallelism.
 
 Lua tables cost more than Go structs, and LuaJIT's garbage collector is incremental only (not generational), so it lets garbage build up further before collecting. The collector settings trade speed for memory: on tRPC, `TSCLUA_GC_PAUSE=175 TSCLUA_GC_STEPMUL=600` takes about 6% longer for an 11% lower peak, and `TSCLUA_GC_PAUSE=125 TSCLUA_GC_STEPMUL=800` about 45% longer for 25% less. Storing struct fields and slice headers in array slots and keeping closures out of hot loops (which LuaJIT's JIT cannot compile) made tsc-lua about 30% faster and cut Excalidraw's peak from 7.6 GB to 4.9 GB.
 
-Not measured yet: [tsrs](https://www.npmjs.com/package/tsrs) has no Windows build, [tsc-ts](https://github.com/vercel-labs/tsc-ts) 0.0.2 (its first release with executables) passes this repository's 3 day package age policy on 2026-10-20, and the Sentry and VS Code apps, which take tsc-lua well over an hour each.
+Not measured yet: [tsrs](https://www.npmjs.com/package/tsrs) has no Windows build, and the Sentry and VS Code apps, which take tsc-lua well over an hour each.
 
 ### Method
 
