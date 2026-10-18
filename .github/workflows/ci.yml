@@ -1,0 +1,193 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Read-only by default, jobs opt into more below
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its earlier run; runs on main always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    name: Lint
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run check-types
+      - run: npm test
+      # Fails when .github/workflows/actions.lock is missing a dependency or a locked commit is rejected
+      - name: Verify actions lockfile
+        run: |
+          gh extension install github/gh-actions-lock --pin v0.2.0
+          gh actions-lock --verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  transpile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    name: Transpile
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: transpiler/go.mod
+          cache-dependency-path: transpiler/go.sum
+      - run: bash scripts/fetch-upstream.sh
+      - run: bash scripts/transpile.sh
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: transpiled
+          path: |
+            build/lua
+            build/embed
+          retention-days: 7
+
+  test:
+    needs: transpile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    name: Test
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: transpiler/go.mod
+          cache-dependency-path: transpiler/go.sum
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: transpiled
+          path: build
+      - run: bash scripts/fetch-upstream.sh
+      - run: bash scripts/build-dev-lua.sh
+      - name: Transpiler tests
+        run: bash scripts/test-transpiler.sh
+        env:
+          LUA: ${{ github.workspace }}/build/tools/luajit
+      # A slice of the TypeScript baseline suite keeps CI time reasonable.
+      - name: Conformance (subset)
+        # The default job count follows the runner's memory (heavy tests need about 3 GB each).
+        run: node scripts/conformance.ts --run 'X/^[ab]' --lua build/tools/luajit
+
+  build:
+    needs: transpile
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: linux-x64
+            cc: gcc
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            cc: gcc
+          - os: ubuntu-24.04
+            target: linux-x64-musl
+            musl: true
+          - os: ubuntu-24.04-arm
+            target: linux-arm64-musl
+            musl: true
+          - os: macos-15
+            target: darwin-arm64
+            cc: clang
+          - os: macos-15-intel
+            target: darwin-x64
+            cc: clang
+          - os: windows-2025
+            target: win32-x64
+            cc: gcc
+    runs-on: ${{ matrix.os }}
+    name: Build ${{ matrix.target }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      # musl builds run in Alpine, whose executables need musl libc to start.
+      ALPINE: alpine:3.22
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: transpiled
+          path: build
+      - name: Build executable
+        if: ${{ !matrix.musl }}
+        env:
+          CC: ${{ matrix.cc }}
+        run: bash scripts/build-binary.sh
+      - name: Build executable (musl)
+        if: ${{ matrix.musl }}
+        run: docker run --rm -v "$PWD:/src" -w /src "$ALPINE" sh -c 'apk add --no-cache bash build-base && bash scripts/build-binary.sh'
+      - name: Smoke test
+        if: ${{ !matrix.musl }}
+        run: bash scripts/smoke-test.sh
+      - name: Smoke test (musl)
+        if: ${{ matrix.musl }}
+        run: docker run --rm -v "$PWD:/src" -w /src "$ALPINE" sh -c 'apk add --no-cache bash && bash scripts/smoke-test.sh'
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: bin-${{ matrix.target }}
+          path: build/bin
+          retention-days: 7
+
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    name: Release
+    needs: [lint, test, build]
+    # Never on pull requests or forks, only pushes to main of this repo
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Cherry/tsc-lua'
+    environment: release
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    permissions:
+      contents: write # tags and GitHub releases
+      issues: write # semantic-release comments on released issues
+      pull-requests: write # and on released pull requests
+      id-token: write # npm trusted publishing, no npm token needed
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          # semantic-release reads the full history and tags to work out the next version
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: bin-*
+          path: build/platforms
+      - run: npm ci
+      - run: npx semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    # Matches min-release-age in .npmrc
+    cooldown:
+      default-days: 3
+  - package-ecosystem: gomod
+    directory: /transpiler
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+  # Keeps the actions and their pins in .github/workflows/actions.lock current
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
