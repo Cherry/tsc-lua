@@ -22,7 +22,8 @@ case "$(uname -s)" in
 		LIBS="-lshell32"
 		;;
 	Linux*)
-		LIBS="-lm -ldl"
+		# libgcc is linked in: LuaJIT unwinds through it, and Alpine has no libgcc_s.so by default.
+		LIBS="-lm -ldl -static-libgcc"
 		;;
 	Darwin*)
 		export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"

@@ -15,6 +15,8 @@ if [ ${#names[@]} -eq 0 ]; then
 		names+=("$(basename "$d")")
 	done
 fi
+# Fetch the test programs' modules first, so go run prints nothing but their output.
+(cd testdata && go mod download)
 pass=0
 fail=0
 for name in "${names[@]}"; do
