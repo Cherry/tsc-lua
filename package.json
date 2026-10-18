@@ -52,7 +52,7 @@
 		"access": "public"
 	},
 	"devDependencies": {
-		"@johnnymorganz/stylua-bin": "2.5.2",
+		"@johnnymorganz/stylua-bin": "2.6.0",
 		"@nodecraft/eslint-config": "52.2.0",
 		"@semantic-release/exec": "7.1.0",
 		"@stylistic/eslint-plugin": "5.10.0",
