@@ -88,6 +88,9 @@ func (fc *funcCtx) findStringViews(body *ast.BlockStmt) {
 
 // viewOf returns the string view an expression refers to, if any.
 func (fc *funcCtx) viewOf(e ast.Expr) *strView {
+	if ref, ok := fc.cappedField(e, ""); ok {
+		return ref.view()
+	}
 	id, ok := unparen(e).(*ast.Ident)
 	if !ok {
 		return nil
@@ -214,6 +217,9 @@ func (fc *funcCtx) rangeCall(call *ast.CallExpr) (string, bool) {
 	case "strings.Index":
 		s, i, e := fc.stringRange(call.Args[0])
 		return fmt.Sprintf("rt.indexFrom(%s, %s, %s, %s)", s, i, fc.expr(call.Args[1]), endArg(e)), true
+	case "strings.LastIndex":
+		s, i, e := fc.stringRange(call.Args[0])
+		return fmt.Sprintf("rt.lastIndexTo(%s, %s, %s, %s)", s, i, fc.expr(call.Args[1]), endArg(e)), true
 	case "strings.IndexAny":
 		s, i, e := fc.stringRange(call.Args[0])
 		return fmt.Sprintf("rt.indexAnyFrom(%s, %s, %s, %s)", s, i, fc.expr(call.Args[1]), endArg(e)), true

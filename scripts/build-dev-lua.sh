@@ -36,7 +36,7 @@ case "$(uname -s)" in
 	*)
 		"$MAKE" -C "$SRC" -j8 CC="$CC" XCFLAGS="$XCFLAGS"
 		cp "$SRC/luajit" "$TOOLS/luajit"
-		"$CC" -O2 -fPIC -shared -I"$SRC" -o "$TOOLS/tscnative.so" "$ROOT/native/tscnative.c" -ldl
+		"$CC" -O2 -fPIC -shared -pthread -I"$SRC" -o "$TOOLS/tscnative.so" "$ROOT/native/tscnative.c" -ldl
 		;;
 esac
 cp -r "$SRC/jit" "$TOOLS/jit"

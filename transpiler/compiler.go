@@ -56,6 +56,11 @@ type Compiler struct {
 	// Slice fields and locals whose header escapes, so self-updates must make a new header.
 	sliceEscapes map[*types.Var]bool
 
+	// String parameters that take a substring as base, offset and length, by function (views.go).
+	viewParams map[*types.Func][]int
+	// String fields that are cut to a prefix without copying (views.go).
+	cappedFields map[*types.Var]bool
+
 	embedOut    string
 	embedCopied map[string]bool
 }
@@ -79,6 +84,8 @@ func newCompiler(pkgs []*packages.Package, nativesDir string) *Compiler {
 		addrTakenAgg:  map[*types.Var]bool{},
 		addrTakenElem: map[string]bool{},
 		mutableTypes:  map[string]bool{},
+		viewParams:    map[*types.Func][]int{},
+		cappedFields:  map[*types.Var]bool{},
 	}
 	for _, p := range pkgs {
 		c.byPath[p.PkgPath] = p
@@ -247,6 +254,7 @@ func (c *Compiler) analyze() {
 	}
 	c.analyzeClosures()
 	c.analyzeInPlaceSlices()
+	c.analyzeStringViews()
 	// Mutability propagates to aggregates that contain mutable aggregates by value.
 	changed := true
 	for changed {

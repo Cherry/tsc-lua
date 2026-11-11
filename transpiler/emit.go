@@ -624,6 +624,8 @@ func (e *pkgEmitter) funcDecl(d *ast.FuncDecl) {
 		params = append(params, fc.paramNames(d.Recv)...)
 	}
 	params = append(params, fc.paramNames(d.Type.Params)...)
+	viewExtra, viewDefaults := fc.viewParamNames(fn)
+	params = append(params, viewExtra...)
 	if d.Body == nil {
 		e.funcs.line("function P.%s(...) rt.nobody(%s) end", name, luaString(e.pkg.PkgPath+"."+name))
 		return
@@ -632,6 +634,9 @@ func (e *pkgEmitter) funcDecl(d *ast.FuncDecl) {
 	fc.topLevel = true
 	e.funcs.line("function P.%s(%s)", name, strings.Join(params, ", "))
 	e.funcs.indent++
+	for _, line := range viewDefaults {
+		e.funcs.line("%s", line)
+	}
 	fc.prologue(&e.funcs, d.Recv, d.Type)
 	e.funcs.indent--
 	fc.body(&e.funcs, d.Body)

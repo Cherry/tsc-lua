@@ -12,7 +12,7 @@ const { values, positionals } = parseArgs({
 	allowPositionals: true,
 	options: {
 		'apps': { type: 'string', default: 'trpc,typeorm,excalidraw,playwright,sentry,vscode' },
-		'tools': { type: 'string', default: 'tsc6,tsc7,tsc-rs,tsc-rs-fast,tsrs,tsc-ts,bun,tsc-lua' },
+		'tools': { type: 'string', default: 'tsc6,tsc7,tsc-rs,tsc-rs-fast,tsrs,tsc-ts,bun,tsc-lua,tsc-lua-1' },
 		'runs': { type: 'string', default: '5' },
 		'slow-runs': { type: 'string', default: '1' },
 		'timeout': { type: 'string', default: String(4 * 60 * 60) },
@@ -58,6 +58,7 @@ interface Tool {
 	command: string;
 	args: string[];
 	slow?: boolean;
+	env?: Record<string, string>;
 }
 
 function tools(config: string): Record<string, Tool | undefined> {
@@ -71,6 +72,8 @@ function tools(config: string): Record<string, Tool | undefined> {
 		'tsc-ts': binTool('tsc-ts', 'tsc-ts', flags),
 		'bun': { command: 'bun', args: ['check', '-p', config, '--noEmit', '--incremental', 'false', '--no-pretty', '--all'] },
 		'tsc-lua': { command: path.join(root, 'build', 'bin', `tsc-lua${exe}`), args: flags, slow: true },
+		// The same executable checking in one process.
+		'tsc-lua-1': { command: path.join(root, 'build', 'bin', `tsc-lua${exe}`), args: flags, slow: true, env: { TSCLUA_CHECK_PROCESSES: '1' } },
 	};
 }
 
@@ -82,6 +85,8 @@ interface Measurement {
 	exitCode: number | null;
 	errors: number;
 	peakMB: number | undefined;
+	// The physical memory the machine gave up while the tool ran (Windows only).
+	totalPeakMB: number | undefined;
 }
 
 interface Run {
@@ -89,12 +94,14 @@ interface Run {
 	status: number | null;
 	output: string;
 	peakBytes?: number;
+	totalPeakBytes?: number;
 }
 
 function runOnce(tool: Tool, cwd: string): Run {
 	const started = process.hrtime.bigint();
 	const result = spawnSync(tool.command, tool.args, {
 		cwd,
+		env: { ...process.env, ...tool.env },
 		encoding: 'utf8',
 		maxBuffer: 1024 * 1024 * 1024,
 		timeout: Number(values.timeout) * 1000,
@@ -112,22 +119,23 @@ function runMeasured(tool: Tool, cwd: string): Run {
 		const script = path.join(import.meta.dirname, 'peak.ps1');
 		const result = spawnSync('pwsh', ['-NoProfile', '-File', script, '-Out', out, '-Command', tool.command, '-ArgumentsJson', JSON.stringify(tool.args)], {
 			cwd,
+			env: { ...process.env, ...tool.env },
 			encoding: 'utf8',
 			timeout: Number(values.timeout) * 1000,
 		});
-		const report = JSON.parse(result.stdout) as { seconds: number; peakBytes: number; exitCode: number; };
+		const report = JSON.parse(result.stdout) as { seconds: number; peakBytes: number; totalPeakBytes: number; exitCode: number; };
 		const output = fs.readFileSync(out, 'utf8');
 		fs.rmSync(out);
-		return { seconds: report.seconds, status: report.exitCode, output, peakBytes: report.peakBytes };
+		return { seconds: report.seconds, status: report.exitCode, output, peakBytes: report.peakBytes, totalPeakBytes: report.totalPeakBytes };
 	}
 	if (process.platform === 'darwin') {
-		const run = runOnce({ command: '/usr/bin/time', args: ['-l', tool.command, ...tool.args] }, cwd);
+		const run = runOnce({ command: '/usr/bin/time', args: ['-l', tool.command, ...tool.args], env: tool.env }, cwd);
 		const match = /(\d+)\s+maximum resident set size/.exec(run.output);
 		return { ...run, peakBytes: match ? Number(match[1]) : undefined };
 	}
 	// GNU time writes the format last, after a "Command exited with non-zero status" line if any.
 	const file = path.join(resultsDir, 'peak.txt');
-	const run = runOnce({ command: '/usr/bin/time', args: ['-f', '%M', '-o', file, tool.command, ...tool.args] }, cwd);
+	const run = runOnce({ command: '/usr/bin/time', args: ['-f', '%M', '-o', file, tool.command, ...tool.args], env: tool.env }, cwd);
 	const match = /(\d+)\s*$/.exec(fs.readFileSync(file, 'utf8'));
 	fs.rmSync(file);
 	return { ...run, peakBytes: match ? Number(match[1]) * 1024 : undefined };
@@ -164,10 +172,12 @@ for (const app of values.apps.split(',')) {
 		for (let i = times.length; i < runs; i++) {
 			times.push(runOnce(tool, cwd).seconds);
 		}
-		const peakMB = first.peakBytes === undefined ? undefined : Math.round(first.peakBytes / 1024 / 1024);
-		const measurement = { app, tool: name, times, median: median(times), exitCode: first.status, errors, peakMB };
+		const megabytes = (bytes: number | undefined) => (bytes === undefined ? undefined : Math.round(bytes / 1024 / 1024));
+		const peakMB = megabytes(first.peakBytes);
+		const totalPeakMB = megabytes(first.totalPeakBytes);
+		const measurement = { app, tool: name, times, median: median(times), exitCode: first.status, errors, peakMB, totalPeakMB };
 		measurements.push(measurement);
-		console.log(`${app.padEnd(11)} ${name.padEnd(12)} ${measurement.median.toFixed(2).padStart(9)}s  peak=${String(peakMB ?? '?').padStart(6)} MB  exit=${first.status} errors=${errors}`);
+		console.log(`${app.padEnd(11)} ${name.padEnd(12)} ${measurement.median.toFixed(2).padStart(9)}s  peak=${String(peakMB ?? '?').padStart(6)} MB  total=${String(totalPeakMB ?? '?').padStart(6)} MB  exit=${first.status} errors=${errors}`);
 		fs.writeFileSync(path.join(resultsDir, 'results.json'), `${JSON.stringify(measurements, null, '\t')}\n`);
 	}
 }

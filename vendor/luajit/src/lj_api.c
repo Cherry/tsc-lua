@@ -1281,6 +1281,9 @@ LUA_API int lua_gc(lua_State *L, int what, int data)
   case LUA_GCISRUNNING:
     res = (g->gc.threshold != LJ_MAX_MEM);
     break;
+  case LUA_GCYOUNG:  /* tsc-lua: data is the nursery size in KB. */
+    lj_gc_young(L, (GCSize)(data < 0 ? 0 : data) << 10);
+    break;
   default:
     res = -1;  /* Invalid option. */
   }

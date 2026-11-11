@@ -310,6 +310,10 @@ type lvalue struct {
 	typ   types.Type
 	copy  bool // aggregate storage that must be updated in place
 	setup []string
+	// capKey is the length key of a capped string field (views.go), which a plain store clears,
+	// and capRead reads that field as a plain string.
+	capKey  string
+	capRead string
 }
 
 func (fc *funcCtx) lvalueOf(e ast.Expr, needTemps bool) lvalue {
@@ -342,9 +346,23 @@ func (fc *funcCtx) lvalueOf(e ast.Expr, needTemps bool) lvalue {
 			lv.code = fc.fieldPath(base, fc.typeOf(x.X), path)
 			lv.typ = t
 			lv.copy = fc.fieldNeedsCopy(sel)
+			if ref, ok := fc.cappedField(x, fc.fieldPath(base, fc.typeOf(x.X), path[:len(path)-1])); ok {
+				lv.capKey, lv.capRead = ref.key, ref.read()
+			}
 			return lv
 		}
-		return lvalue{kind: "field", code: fc.fieldPath(base, fc.typeOf(x.X), path), typ: t, copy: fc.fieldNeedsCopy(sel)}
+		lv := lvalue{kind: "field", code: fc.fieldPath(base, fc.typeOf(x.X), path), typ: t, copy: fc.fieldNeedsCopy(sel)}
+		if ref, ok := fc.cappedField(x, fc.fieldPath(base, fc.typeOf(x.X), path[:len(path)-1])); ok {
+			// The table is named twice, so it has to be cheap to evaluate again.
+			if !isSimple(ref.tab) {
+				tmp := fc.e.newTmp("o")
+				lv.setup = []string{fmt.Sprintf("local %s = %s", tmp, ref.tab)}
+				ref, _ = fc.cappedField(x, tmp)
+				lv.code = ref.slot
+			}
+			lv.capKey, lv.capRead = ref.key, ref.read()
+		}
+		return lv
 	case *ast.IndexExpr:
 		xt := fc.typeOf(x.X)
 		var setup []string
@@ -441,6 +459,9 @@ func (fc *funcCtx) store(w *writer, lv lvalue, val string) {
 			return
 		}
 		emitLine(w, fmt.Sprintf("%s = %s", lv.code, val))
+		if lv.capKey != "" {
+			emitLine(w, lv.capKey+" = nil")
+		}
 	}
 }
 
@@ -461,6 +482,9 @@ func (fc *funcCtx) assign(w *writer, s *ast.AssignStmt) {
 		return
 	}
 	if len(s.Lhs) == 1 && len(s.Rhs) == 1 {
+		if fc.cappedStore(w, s.Lhs[0], s.Rhs[0]) {
+			return
+		}
 		lv := fc.lvalueOf(s.Lhs[0], false)
 		var val string
 		if lv.kind == "blank" {
@@ -497,7 +521,7 @@ func (fc *funcCtx) assign(w *writer, s *ast.AssignStmt) {
 	fc.flushInto(w)
 	allPlain := true
 	for _, lv := range lvs {
-		if lv.kind != "var" && lv.kind != "field" && lv.kind != "index" || lv.copy || len(lv.setup) > 0 {
+		if lv.kind != "var" && lv.kind != "field" && lv.kind != "index" || lv.copy || len(lv.setup) > 0 || lv.capKey != "" {
 			allPlain = false
 		}
 	}
@@ -669,6 +693,10 @@ func (fc *funcCtx) opAssign(w *writer, lhs ast.Expr, op token.Token, rhs ast.Exp
 	}
 	t := fc.typeOf(lhs)
 	cur := fc.load(lv)
+	if lv.capKey != "" {
+		// The slot may hold more than the field's value.
+		cur = lv.capRead
+	}
 	var val string
 	if op == token.SHL || op == token.SHR {
 		val = fc.shift(op, cur, rhs, t)

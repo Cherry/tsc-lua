@@ -1,6 +1,8 @@
 # Runs a command and reports its peak memory, for scripts/bench/run.ts on Windows: the largest
 # peak working set of the process or any of its descendants (npm bin shims start the real
-# compiler as a child). Output goes to -Out; stdout gets {"seconds":..,"peakBytes":..,"exitCode":..}.
+# compiler as a child), and how much physical memory the machine gave up while it ran, for
+# compilers that work in several processes sharing memory. Output goes to -Out; stdout gets
+# {"seconds":..,"peakBytes":..,"totalPeakBytes":..,"exitCode":..}.
 # Arguments come as a JSON array, since PowerShell would bind ones like -p to its own parameters.
 param(
 	[Parameter(Mandatory)] [string]$Out,
@@ -80,6 +82,29 @@ public static class PeakMemory {
 		}
 		return peak;
 	}
+
+	[StructLayout(LayoutKind.Sequential)]
+	struct MemoryStatus {
+		public uint Length;
+		public uint MemoryLoad;
+		public ulong TotalPhysical;
+		public ulong AvailablePhysical;
+		public ulong TotalPageFile;
+		public ulong AvailablePageFile;
+		public ulong TotalVirtual;
+		public ulong AvailableVirtual;
+		public ulong AvailableExtendedVirtual;
+	}
+
+	[DllImport("kernel32.dll", SetLastError = true)]
+	static extern bool GlobalMemoryStatusEx(ref MemoryStatus status);
+
+	public static ulong AvailablePhysical() {
+		MemoryStatus status = new MemoryStatus();
+		status.Length = (uint)Marshal.SizeOf(typeof(MemoryStatus));
+		GlobalMemoryStatusEx(ref status);
+		return status.AvailablePhysical;
+	}
 }
 '@
 
@@ -92,6 +117,8 @@ $psi.WorkingDirectory = (Get-Location).Path
 $psi.UseShellExecute = $false
 $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError = $true
+$availableBefore = [PeakMemory]::AvailablePhysical()
+$availableLeast = $availableBefore
 $watch = [Diagnostics.Stopwatch]::StartNew()
 $process = [Diagnostics.Process]::Start($psi)
 [PeakMemory]::Attach($process.Handle)
@@ -99,10 +126,11 @@ $stdout = $process.StandardOutput.ReadToEndAsync()
 $stderr = $process.StandardError.ReadToEndAsync()
 while (-not $process.HasExited) {
 	[PeakMemory]::Poll()
+	$availableLeast = [Math]::Min($availableLeast, [PeakMemory]::AvailablePhysical())
 	Start-Sleep -Milliseconds 50
 }
 $process.WaitForExit()
 $seconds = $watch.Elapsed.TotalSeconds
 
 [IO.File]::WriteAllText($Out, $stdout.Result + $stderr.Result)
-[pscustomobject]@{ seconds = $seconds; peakBytes = [PeakMemory]::Peak(); exitCode = $process.ExitCode } | ConvertTo-Json -Compress
+[pscustomobject]@{ seconds = $seconds; peakBytes = [PeakMemory]::Peak(); totalPeakBytes = $availableBefore - $availableLeast; exitCode = $process.ExitCode } | ConvertTo-Json -Compress

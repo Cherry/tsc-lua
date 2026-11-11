@@ -692,7 +692,12 @@ function P.RemoveAll(path)
 			end
 		end
 	end
-	return P.Remove(path)
+	local err = P.Remove(path)
+	-- As in Go, it is no error when something else removed it first.
+	if err ~= nil and not rawStat(path, false) then
+		return nil
+	end
+	return err
 end
 
 function P.Rename(from, to)

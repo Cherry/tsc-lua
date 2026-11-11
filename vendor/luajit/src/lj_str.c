@@ -305,6 +305,8 @@ static GCstr *lj_str_alloc(lua_State *L, const char *str, MSize len,
   setgcrefp(s->nextgc, (u & ~(uintptr_t)1));
   /* NOBARRIER: The string table is a GC root. */
   setgcrefp(g->str.tab[hash], ((uintptr_t)s | (u & 1)));
+  if (g->gc.young)
+    lj_gc_youngstr(L, s);
   if (g->str.num++ > g->str.mask)  /* Allow a 100% load factor. */
     lj_str_resize(L, (g->str.mask<<1)+1);  /* Grow string table. */
   return s;  /* Return newly interned string. */

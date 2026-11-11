@@ -51,8 +51,9 @@
 #define gc_markobj(g, o) \
   { if (iswhite(obj2gco(o))) gc_mark(g, obj2gco(o)); }
 
-/* Mark a string object. */
-#define gc_mark_str(s)		((s)->marked &= (uint8_t)~LJ_GC_WHITES)
+/* Mark a string object. tsc-lua: a marked one is not written, it may be shared. */
+#define gc_mark_str(s) \
+  { if ((s)->marked & LJ_GC_WHITES) (s)->marked &= (uint8_t)~LJ_GC_WHITES; }
 
 /* Mark a white GCobj. */
 static void gc_mark(global_State *g, GCobj *o)
@@ -143,8 +144,10 @@ size_t lj_gc_separateudata(global_State *g, int all)
 {
   size_t m = 0;
   GCRef *p = &mainthread(g)->nextgc;
+  /* tsc-lua: a young collection stops at the old userdata (none otherwise). */
+  GCobj *old = all ? NULL : gcref(g->gc.oldudata);
   GCobj *o;
-  while ((o = gcref(*p)) != NULL) {
+  while ((o = gcref(*p)) != old) {
     if (!(iswhite(o) || all) || isfinalized(gco2ud(o))) {
       p = &o->gch.nextgc;  /* Nothing to do. */
     } else if (!lj_meta_fastg(g, tabref(gco2ud(o)->metatable), MM_gc)) {
@@ -613,6 +616,8 @@ void lj_gc_freeall(global_State *g)
   gc_fullsweep(g, &g->gc.root);
   for (i = g->str.mask; i != ~(MSize)0; i--)  /* Free all string hash chains. */
     gc_sweepstr(g, &g->str.tab[i]);
+  if (g->gc.youngstrsz)
+    lj_mem_freevec(g, mref(g->gc.youngstr, GCRef), g->gc.youngstrsz, GCRef);
 }
 
 /* -- Collector ----------------------------------------------------------- */
@@ -724,6 +729,204 @@ static size_t gc_onestep(lua_State *L)
   }
 }
 
+/* -- Young mode (tsc-lua) ------------------------------------------------ */
+
+/*
+** In young mode only the objects made since the last collection are
+** collected. An object that survives one collection is old: it is never
+** freed, and a collection never writes to it unless the program did. That
+** keeps memory shared with copies of the process (fork) shared.
+**
+** The collector stays in the propagation phase for good, so the write
+** barriers list every old object that may refer to a young one: tables on
+** the grayagain list, anything else by marking the young object at once.
+** Threads have no barrier and are all looked at in every collection.
+*/
+
+/* Make an object old. Threads stay gray and listed, like their open upvalues. */
+static void gc_young_makeold(global_State *g, GCobj *o)
+{
+  int gct = o->gch.gct;
+  o->gch.marked &= (uint8_t)~LJ_GC_COLORS;
+  if (gct == ~LJ_TTHREAD) {
+    GCobj *uv;
+    for (uv = gcref(gco2th(o)->openupval); uv != NULL; uv = gcnext(uv))
+      uv->gch.marked &= (uint8_t)~LJ_GC_COLORS;
+    setgcrefr(o->gch.gclist, g->gc.grayagain);
+    setgcref(g->gc.grayagain, o);
+  } else if (gct != ~LJ_TCDATA) {
+    o->gch.marked |= LJ_GC_BLACK;
+  }
+}
+
+/* Remember a string made in young mode: only these are looked at in a sweep. */
+void lj_gc_youngstr(lua_State *L, GCstr *s)
+{
+  global_State *g = G(L);
+  GCRef *v = mref(g->gc.youngstr, GCRef);
+  if (g->gc.youngstrnum == g->gc.youngstrsz) {
+    lj_mem_growvec(L, v, g->gc.youngstrsz, (MSize)(LJ_MAX_MEM32/sizeof(GCRef)),
+		   GCRef);
+    setmref(g->gc.youngstr, v);
+  }
+  setgcref(v[g->gc.youngstrnum++], obj2gco(s));
+}
+
+/* Unlink a dead young string from its hash chain and free it. */
+static void gc_young_freestr(global_State *g, GCstr *s)
+{
+  GCRef *chain = &g->str.tab[s->hash & g->str.mask];
+  uintptr_t u = gcrefu(*chain);
+  GCobj *o = (GCobj *)(u & ~(uintptr_t)1);
+  if (o == obj2gco(s)) {
+    setgcrefp(*chain, (gcrefu(s->nextgc) | (u & 1)));  /* Keeps hashalg bit. */
+  } else {
+    while (o != NULL && gcnext(o) != obj2gco(s))
+      o = gcnext(o);
+    if (o == NULL)
+      return;
+    setgcrefr(o->gch.nextgc, s->nextgc);
+  }
+  lj_str_free(g, s);
+}
+
+/* Free the open upvalues of a thread that no function refers to. */
+static void gc_young_sweepuv(global_State *g, lua_State *th)
+{
+  GCRef *p = &th->openupval;
+  GCobj *o;
+  while ((o = gcref(*p)) != NULL) {
+    if (iswhite(o)) {
+      setgcrefr(*p, o->gch.nextgc);
+      lj_func_freeuv(g, gco2uv(o));
+    } else {
+      p = &o->gch.nextgc;
+    }
+  }
+}
+
+/* Free the unmarked objects of a list up to the first old one. */
+static void gc_young_sweep(global_State *g, GCRef *p, GCobj *old)
+{
+  GCobj *o;
+  while ((o = gcref(*p)) != NULL && o != old) {
+    if (o->gch.gct == ~LJ_TTHREAD)
+      gc_young_sweepuv(g, gco2th(o));
+    if (iswhite(o) && !(o->gch.marked & LJ_GC_FIXED)) {
+      setgcrefr(*p, o->gch.nextgc);
+      gc_freefunc[o->gch.gct - ~LJ_TSTR](g, o);
+    } else {
+      p = &o->gch.nextgc;
+    }
+  }
+}
+
+/* Collect the objects made since the last collection. Must not run on trace. */
+static void gc_young(lua_State *L)
+{
+  global_State *g = G(L);
+  GCRef *v = mref(g->gc.youngstr, GCRef);
+  GCobj *o;
+  MSize i;
+  lj_assertG(tvref(g->jit_base) == NULL, "young collection on trace");
+  /* Marking follows atomic(). The state also keeps barriers marking in the sweep. */
+  g->gc.state = GCSatomic;
+  gc_mark_uv(g);
+  gc_propagate_gray(g);
+  setgcrefr(g->gc.gray, g->gc.weak);
+  setgcrefnull(g->gc.weak);
+  gc_markobj(g, L);
+#if LJ_HASFFI
+  if (ctype_ctsG(g) && ctype_ctsG(g)->L)
+    gc_markobj(g, ctype_ctsG(g)->L);
+#endif
+  gc_traverse_curtrace(g);
+  gc_mark_gcroot(g);
+  gc_propagate_gray(g);
+  setgcrefr(g->gc.gray, g->gc.grayagain);  /* Threads and old tables stored to. */
+  setgcrefnull(g->gc.grayagain);
+  gc_propagate_gray(g);
+  lj_gc_separateudata(g, 0);
+  gc_mark_mmudata(g);
+  gc_propagate_gray(g);
+  gc_clearweak(g, gcref(g->gc.weak));
+  /* Weak tables are left gray and unlisted, so make them black for the barrier. */
+  for (o = gcref(g->gc.weak); o != NULL; o = gcref(gco2tab(o)->gclist))
+    gray2black(o);
+  setgcrefnull(g->gc.weak);
+#if LJ_HASFFI
+  o = gcref(g->gcroot[GCROOT_FFI_FIN]);
+  if (o != NULL && isgray(o))
+    gray2black(o);
+#endif
+  /* Sweep. Whatever is still white was made since the last collection. */
+  for (i = 0; i < g->gc.youngstrnum; i++) {
+    GCstr *s = gco2str(gcref(v[i]));
+    if ((s->marked & LJ_GC_WHITES) && !(s->marked & LJ_GC_FIXED))
+      gc_young_freestr(g, s);
+  }
+  g->gc.youngstrnum = 0;
+  for (o = gcref(g->gc.grayagain); o != NULL; o = gcref(o->gch.gclist))
+    if (o->gch.gct == ~LJ_TTHREAD)
+      gc_young_sweepuv(g, gco2th(o));
+  gc_young_sweep(g, &g->gc.root, gcref(g->gc.oldroot));
+  gc_young_sweep(g, &mainthread(g)->nextgc, gcref(g->gc.oldudata));
+  setgcrefr(g->gc.oldroot, g->gc.root);
+  setgcrefr(g->gc.oldudata, mainthread(g)->nextgc);
+  g->gc.state = GCSpropagate;
+  while (gcref(g->gc.mmudata) != NULL)
+    gc_finalize(L);
+  g->gc.threshold = g->gc.total + g->gc.nursery;
+}
+
+/*
+** Everything that exists now becomes old, garbage included, and from here on
+** a young collection runs each time nursery bytes were allocated. Nothing is
+** freed, which would leave holes in the heap: a copy of the process fills
+** them with its own objects and unshares those pages.
+*/
+void lj_gc_young(lua_State *L, GCSize nursery)
+{
+  global_State *g = G(L);
+  GCRef *v = mref(g->gc.youngstr, GCRef);
+  GCobj *o, *next;
+  MSize i;
+  if (!g->gc.young) {  /* Abandon whatever the collector was doing. */
+    while (gcref(g->gc.mmudata) != NULL)
+      gc_finalize(L);
+    setgcrefnull(g->gc.grayagain);
+    for (i = 0; i <= g->str.mask; i++) {
+      o = (GCobj *)(gcrefu(g->str.tab[i]) & ~(uintptr_t)1);
+      for (; o != NULL; o = gcnext(o))
+	o->gch.marked &= (uint8_t)~LJ_GC_WHITES;
+    }
+  }
+  for (i = 0; i < g->gc.youngstrnum; i++)
+    gc_mark_str(gco2str(gcref(v[i])));
+  g->gc.youngstrnum = 0;
+  /* Old tables stored to refer to nothing young now, so only threads stay listed. */
+  o = gcref(g->gc.grayagain);
+  setgcrefnull(g->gc.grayagain);
+  for (; o != NULL; o = next) {
+    next = gcref(o->gch.gclist);
+    gc_young_makeold(g, o);
+  }
+  setgcrefnull(g->gc.gray);
+  setgcrefnull(g->gc.weak);
+  /* The first time there is no old object yet and this is the whole list. */
+  for (o = gcref(g->gc.root); o != gcref(g->gc.oldroot); o = gcnext(o))
+    gc_young_makeold(g, o);
+  o = gcref(mainthread(g)->nextgc);
+  for (; o != gcref(g->gc.oldudata); o = gcnext(o))
+    gc_young_makeold(g, o);
+  setgcrefr(g->gc.oldroot, g->gc.root);
+  setgcrefr(g->gc.oldudata, mainthread(g)->nextgc);
+  g->gc.state = GCSpropagate;
+  g->gc.young = 1;
+  g->gc.nursery = nursery;
+  g->gc.threshold = g->gc.total + nursery;
+}
+
 /* Perform a limited amount of incremental GC steps. */
 int LJ_FASTCALL lj_gc_step(lua_State *L)
 {
@@ -731,6 +934,14 @@ int LJ_FASTCALL lj_gc_step(lua_State *L)
   GCSize lim;
   int32_t ostate = g->vmstate;
   setvmstate(g, GC);
+  if (g->gc.young) {
+    if (tvref(g->jit_base))
+      g->gc.state = GCSatomic;  /* Makes the trace exit and step again. */
+    else
+      gc_young(L);
+    g->vmstate = ostate;
+    return 1;
+  }
   lim = (GCSTEPSIZE/100) * g->gc.stepmul;
   if (lim == 0)
     lim = LJ_MAX_MEM;
@@ -783,6 +994,11 @@ void lj_gc_fullgc(lua_State *L)
   global_State *g = G(L);
   int32_t ostate = g->vmstate;
   setvmstate(g, GC);
+  if (g->gc.young) {  /* tsc-lua: old objects are never collected. */
+    gc_young(L);
+    g->vmstate = ostate;
+    return;
+  }
   if (g->gc.state <= GCSatomic) {  /* Caught somewhere in the middle. */
     setmref(g->gc.sweep, &g->gc.root);  /* Sweep everything (preserving it). */
     setgcrefnull(g->gc.gray);  /* Reset lists from partial propagation. */
