@@ -54,6 +54,9 @@ transpiled) have native Lua implementations in `runtime/natives/`.
 - `s = append(s, ...)` and `s = s[i:j]` update the header in place (`rt.push1`,
   `rt.reslice`, ...) when s is a slice field or local whose header nothing else can hold
   (transpiler/inplace.go); struct copies duplicate slice headers so they never share one.
+- Capacity that append grows into is left nil, not zeroed. A slice expression with a high bound
+  passes the element's zero (`slice(s, lo, hi, z)`, nothing for nilable elements), and reaching
+  past len fills the nil slots it exposes.
 - Struct-valued fields, named as well as embedded, are flattened into the containing table when
   their keys do not collide (`Node.Loc`'s `pos` and `end` live on the node itself). A
   flattened named field keeps flags `0` and has `true` as the sixth element of its field

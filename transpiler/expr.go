@@ -784,7 +784,7 @@ func (fc *funcCtx) mapValueStore(code string, mt *types.Map) string {
 
 func (fc *funcCtx) sliceExpr(e *ast.SliceExpr) string {
 	x := fc.expr(e.X)
-	lo, hi, max := "nil", "nil", ""
+	lo, hi, max, zero := "nil", "nil", "", ""
 	if e.Low != nil {
 		lo = asLuaNumber(fc.expr(e.Low), fc.typeOf(e.Low))
 	}
@@ -805,12 +805,19 @@ func (fc *funcCtx) sliceExpr(e *ast.SliceExpr) string {
 		x = fmt.Sprintf("rt.arrslice(%s, %d)", x, u.Len())
 	case *types.Pointer:
 		x = fmt.Sprintf("rt.arrslice(%s, %d)", x, u.Elem().Underlying().(*types.Array).Len())
+	case *types.Slice:
+		// Reslicing past len can expose capacity that append grew without zeroing.
+		if e.High != nil {
+			if z := fc.zeroArg(u.Elem()); z != "nil" {
+				zero = ", " + z
+			}
+		}
 	}
 	if e.Slice3 {
 		max = asLuaNumber(fc.expr(e.Max), fc.typeOf(e.Max))
-		return fmt.Sprintf("rt.slice3(%s, %s, %s, %s)", x, lo, hi, max)
+		return fmt.Sprintf("rt.slice3(%s, %s, %s, %s%s)", x, lo, hi, max, zero)
 	}
-	return fmt.Sprintf("slice(%s, %s, %s)", x, lo, hi)
+	return fmt.Sprintf("slice(%s, %s, %s%s)", x, lo, hi, zero)
 }
 
 // bitcastSource matches *(*T)(unsafe.Pointer(p)) and returns p when it points to a different basic type.
