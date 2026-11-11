@@ -368,6 +368,9 @@ func (fc *funcCtx) selector(se *ast.SelectorExpr) string {
 	}
 	switch sel.Kind() {
 	case types.FieldVal:
+		if ref, ok := fc.cappedField(se, ""); ok {
+			return ref.read()
+		}
 		return fc.fieldPath(fc.expr(se.X), fc.typeOf(se.X), sel.Index())
 	case types.MethodVal:
 		return fc.methodValue(se, sel)
@@ -418,6 +421,8 @@ type methodTarget struct {
 	atomicTab   string
 	atomicInfo  fieldInfo
 	atomicValue types.Type
+	// noInline is set when the arguments carry the offset and length of a view (views.go).
+	noInline bool
 }
 
 func (fc *funcCtx) methodTargetOf(se *ast.SelectorExpr, sel *types.Selection) methodTarget {
@@ -528,7 +533,7 @@ func (fc *funcCtx) formatMethodCall(mt methodTarget, args []string) string {
 	if mt.iface {
 		return fmt.Sprintf("%s:%s(%s)", prefix(mt.recv), methodKey(mt.name), strings.Join(args, ", "))
 	}
-	if mt.fnObj != nil && len(mt.typeArgs) == 0 {
+	if mt.fnObj != nil && len(mt.typeArgs) == 0 && !mt.noInline {
 		if code, ok := fc.e.c.inlineCall(mt.fnObj, append([]string{mt.recv}, args...), fc); ok {
 			return code
 		}
@@ -882,6 +887,10 @@ func (fc *funcCtx) addressOf(x ast.Expr) string {
 	}
 	if isStructType(t) || isArrayType(t) {
 		return fc.expr(x)
+	}
+	if fc.e.c.cappedFieldVar(fc.info(), x) != nil {
+		// A pointer would store into the slot without clearing the field's length.
+		fatalf("%s: address of a capped string field (transpiler/views.go)", fc.e.pos(x.Pos()))
 	}
 	switch x := x.(type) {
 	case *ast.Ident:

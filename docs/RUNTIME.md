@@ -63,6 +63,20 @@ transpiled) have native Lua implementations in `runtime/natives/`.
   descriptor. Native types are never flattened. Fields of the `sync/atomic` integer types hold
   the plain value; their common methods compile to `rt.aadd` and friends, the others get a field
   pointer.
+- A Go substring is free and Lua's `string.sub` copies, so substrings are kept as views where
+  that matters (transpiler/strview.go, transpiler/views.go). A string local initialized from
+  `s[i:j]` is a `(base, offset, length)` triple of locals, and `utf8.DecodeRuneInString`,
+  `strings.Index` and similar calls on a substring read the base in place (`rt.decodeRuneAt`, ...).
+  A string parameter that some caller passes a substring to, and that its function only measures,
+  indexes, slices or passes on to another such parameter, is a view parameter: the function takes
+  the base string plus two extra trailing parameters (`name__o`, `name__n`), which callers with a
+  whole string leave out. Functions a patch overrides never get view parameters.
+- A capped string field (listed in transpiler/views.go: the scanner's `text` and the parser's
+  `sourceText`) can be cut to a prefix of itself without a copy: the slot keeps the whole string
+  and the key `<field>__n` holds the shorter length, nil when the field is not cut. `len`, indexing
+  and slicing read through the pair; reading the field as a plain value makes the cut real
+  (`rt.capstr`) and any other store clears the length. The JSDoc parser cuts the source text at
+  the end of every comment it parses, which copied most of the file each time.
 - Structs of the module being compiled are indexed: fields live in the table's array part
   (descriptor key `1`, `2`, ...; code reads `x[3]`), which costs 8 bytes a field where a hash
   entry costs 24 and rounds up to a power of two. Each struct type has one slot range wherever
@@ -129,6 +143,63 @@ generic types: `P.Map(T, U, xs, f)`, `P.OrderedMap__Set(K, V, m, k, v)`.
 - Goroutines are coroutines on a cooperative scheduler (`rt.go`, `rt.park`, `rt.ready`);
   `rt.runmain` drives it. Channels, `select`, and `sync` primitives park and wake goroutines.
 - `os.Exit` raises `rt.ExitError`, handled at the top level.
+
+## Checking in copies of the process
+
+Go checks a program's files on several threads. Lua has one, so a plain `--noEmit` compilation
+shares the checking with copies of the process (`runtime/natives/ts/checkcopies.lua`, hooked in
+by the `compiler` and `execute` patches):
+
+- The program is parsed and bound once, with a single checker (`--checkers` is set to 1). The
+  process is then copied with `tscnative.fork`: `fork` where it exists, `RtlCloneUserProcess`
+  on Windows. A copy shares all the memory of the original until either writes to it, so it
+  starts with the whole program, the checker and the compiled traces, at no cost.
+- The files are divided into as many runs of consecutive files as there are processes. The
+  original checks the first run and each copy one of the others, carrying on from the same
+  checker. Consecutive files matter: neighbours import each other, so a process that checks
+  neighbours repeats less of the type resolution the other processes also need.
+- A copy writes what it found to a file (a Lua literal per line: each file's diagnostics and
+  declaration diagnostics, and the checker's global diagnostics and counters) and exits with
+  `tscnative.exit`, without flushing anything it inherited. The original reads the files.
+- LuaJIT's collector writes to every object it visits, which would copy all the memory the
+  processes share. So the compilation collects only young objects (see below): each process
+  frees its own garbage and leaves what it inherited alone. A copy still stops taking files
+  when the machine runs low on memory.
+- Nothing is freed before the copies are made, unless the heap outgrows a quarter of the
+  memory that was free. Freed objects leave holes all over the heap, and every copy would
+  fill them with its own objects, which unshares those pages (it cost 1 to 2 GB on the
+  benchmark apps). Just before copying, everything that exists is made old, garbage included.
+- Before anything depends on it, a throwaway copy is made while the heap is small. If it does
+  not allocate, write a file and exit within ten seconds, the compilation checks in one
+  process. Copies are not tried under ARM64 emulation on Windows.
+- Whatever no copy reported is checked by the original afterwards, so a copy that crashed, was
+  killed, stopped early or wrote something unreadable only costs time.
+- Copies are not used when the compilation emits, is incremental, watches, builds (`-b`),
+  traces, is single threaded or names `--checkers`, when a profiler is running, or when
+  `TSCLUA_CHECK_PROCESSES=1`. `TSCLUA_CHECK_DEBUG=1` reports what each process did.
+- A copy never outlives the original: on Windows the copies are in a job object that ends with
+  it, elsewhere a thread in each copy watches for its exit. On Windows a copy is not known to
+  the Windows subsystem, so it must not use the console or start threads.
+
+### Collecting only young objects
+
+`collectgarbage('young', kilobytes)` is an addition to the LuaJIT in `vendor/` (`lj_gc.c`). From
+then on a collection runs every time that much was allocated and looks only at objects made
+since the previous one. An object that survives a collection is old: it is never freed, and a
+collection never writes to it unless the program stored into it. Calling it again makes
+everything that exists old without freeing anything, and sets the new size.
+
+- The collector stays in its propagation phase for good. LuaJIT's write barriers then do what
+  a generational collector needs: a store into an old table puts the table on a list to look
+  at again, and a store into any other old object marks the young object at once.
+- Thread stacks have no barrier, so every thread is looked at in every collection.
+- The sweep walks the root list from its head, where new objects are added, to the first old
+  object. Strings live in the string table instead, so the ones made since the last
+  collection are kept in a vector.
+- A collection never runs on a trace: the trace exits first, as for LuaJIT's atomic phase.
+- Garbage that was already old stays. A compilation promotes little that dies later (tRPC's
+  heap ends 4% larger than after a full collection), but a long-running process should not
+  use this mode. `TSCLUA_GC_YOUNG=<megabytes>` turns it on from the start, for testing it.
 
 ## Natives
 

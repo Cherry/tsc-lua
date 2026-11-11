@@ -22,6 +22,7 @@
 
 #include <errno.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -47,13 +48,19 @@ WINBASEAPI BOOLEAN WINAPI CreateSymbolicLinkW(LPCWSTR, LPCWSTR, DWORD);
 #else
 #include <dirent.h>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <limits.h>
+#include <pthread.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
+#include <mach/mach.h>
+#include <sys/sysctl.h>
 #endif
 #endif
 
@@ -489,6 +496,138 @@ static int l_cpucount(lua_State *L) {
 	return 1;
 }
 
+/*
+ * memory() returns the physical memory that is available and the total, in bytes, or nil. On
+ * Windows a third result is the commit charge still available: fork needs this process's
+ * memory committed again for every copy, although the copies share it until they write.
+ */
+static int l_memory(lua_State *L) {
+	MEMORYSTATUSEX status;
+	status.dwLength = sizeof(status);
+	if (!GlobalMemoryStatusEx(&status)) {
+		lua_pushnil(L);
+		return 1;
+	}
+	lua_pushnumber(L, (lua_Number)status.ullAvailPhys);
+	lua_pushnumber(L, (lua_Number)status.ullTotalPhys);
+	lua_pushnumber(L, (lua_Number)status.ullAvailPageFile);
+	return 3;
+}
+
+/* Closing this job (when the process ends, however it ends) ends the copies fork made. */
+static HANDLE spawn_job;
+
+static void ensure_spawn_job(void) {
+	if (spawn_job == NULL) {
+		spawn_job = CreateJobObjectW(NULL, NULL);
+		if (spawn_job != NULL) {
+			JOBOBJECT_EXTENDED_LIMIT_INFORMATION info;
+			memset(&info, 0, sizeof(info));
+			info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+			SetInformationJobObject(spawn_job, JobObjectExtendedLimitInformation, &info, sizeof(info));
+		}
+	}
+}
+
+/*
+ * wait(handle, milliseconds) blocks until the copy from fork ends and returns its exit code. With
+ * a time limit it returns nil when the copy is still running by then, and wait can be called again.
+ */
+static int l_wait(lua_State *L) {
+	luaL_checktype(L, 1, LUA_TLIGHTUSERDATA);
+	HANDLE process = (HANDLE)lua_touserdata(L, 1);
+	DWORD limit = lua_isnoneornil(L, 2) ? INFINITE : (DWORD)luaL_checkinteger(L, 2);
+	DWORD code = 1;
+	if (WaitForSingleObject(process, limit) == WAIT_TIMEOUT) {
+		lua_pushnil(L);
+		return 1;
+	}
+	GetExitCodeProcess(process, &code);
+	CloseHandle(process);
+	lua_pushinteger(L, (lua_Integer)code);
+	return 1;
+}
+
+/* kill(handle) stops the copy from fork; wait still has to collect it. */
+static int l_kill(lua_State *L) {
+	luaL_checktype(L, 1, LUA_TLIGHTUSERDATA);
+	TerminateProcess((HANDLE)lua_touserdata(L, 1), 1);
+	return 0;
+}
+
+/* RTL_USER_PROCESS_INFORMATION, which the Windows headers do not declare. */
+typedef struct {
+	ULONG length;
+	HANDLE process;
+	HANDLE thread;
+	HANDLE clientProcess;
+	HANDLE clientThread;
+	BYTE imageInformation[64];
+} CloneInformation;
+
+/*
+ * fork() continues this process in a copy of itself that shares its memory until either writes
+ * to it: it returns 0 in the copy and a handle for wait in the original, or nil when the
+ * system cannot do it. Windows has this as RtlCloneUserProcess. The copy is not known to the
+ * Windows subsystem, so it must not use the console; it can compute, use files and exit.
+ */
+static int l_fork(lua_State *L) {
+	typedef LONG(NTAPI * CloneUserProcess)(ULONG flags, void *processSecurity, void *threadSecurity, HANDLE debugPort, CloneInformation *info);
+	static CloneUserProcess clone;
+	if (clone == NULL) {
+		HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+		clone = ntdll != NULL ? (CloneUserProcess)(void *)GetProcAddress(ntdll, "RtlCloneUserProcess") : NULL;
+	}
+	/* The Windows build is x64: on ARM64 it runs emulated, where a copy is not known to work. */
+	typedef BOOL(WINAPI * MachinesOfProcess)(HANDLE process, USHORT *processMachine, USHORT *nativeMachine);
+	HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+	MachinesOfProcess machines = kernel32 != NULL ? (MachinesOfProcess)(void *)GetProcAddress(kernel32, "IsWow64Process2") : NULL;
+	USHORT processMachine = 0, nativeMachine = 0;
+	int emulated = machines != NULL && machines(GetCurrentProcess(), &processMachine, &nativeMachine) && nativeMachine == 0xAA64;
+	if (clone == NULL || emulated) {
+		lua_pushnil(L);
+		return 1;
+	}
+	ensure_spawn_job();
+	CloneInformation info;
+	memset(&info, 0, sizeof(info));
+	info.length = sizeof(info);
+	/* 1: created suspended, so it joins the job before it runs. 2: inheritable handles are copied. */
+	LONG status = clone(1 | 2, NULL, NULL, NULL, &info);
+	if (status == 0x129 /* STATUS_PROCESS_CLONED */) {
+		lua_pushinteger(L, 0);
+		return 1;
+	}
+	if (status != 0) {
+		lua_pushnil(L);
+		return 1;
+	}
+	if (spawn_job != NULL) {
+		AssignProcessToJobObject(spawn_job, info.process);
+	}
+	ResumeThread(info.thread);
+	CloseHandle(info.thread);
+	lua_pushlightuserdata(L, info.process);
+	return 1;
+}
+
+/* exit(code) ends the process at once: nothing is flushed, which a copy made by fork must not do. */
+static int l_exit(lua_State *L) {
+	TerminateProcess(GetCurrentProcess(), (UINT)luaL_optinteger(L, 1, 0));
+	return 0;
+}
+
+static int l_getpid(lua_State *L) {
+	lua_pushinteger(L, (lua_Integer)GetCurrentProcessId());
+	return 1;
+}
+
+/* The job fork puts its copies in ends them with their parent, so there is nothing to watch. */
+static int l_watchparent(lua_State *L) {
+	(void)L;
+	return 0;
+}
+
 static int l_setbinary(lua_State *L) {
 	(void)L;
 	_setmode(_fileno(stdout), 0x8000 /* _O_BINARY */);
@@ -761,6 +900,164 @@ static int l_cpucount(lua_State *L) {
 	return 1;
 }
 
+/* memory() returns the physical memory that is available and the total, in bytes, or nil. */
+static int l_memory(lua_State *L) {
+#ifdef __APPLE__
+	uint64_t total = 0;
+	size_t size = sizeof(total);
+	vm_statistics64_data_t vm;
+	mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+	if (sysctlbyname("hw.memsize", &total, &size, NULL, 0) != 0 ||
+		host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&vm, &count) != KERN_SUCCESS) {
+		lua_pushnil(L);
+		return 1;
+	}
+	/* Inactive and purgeable pages are given up on demand, like the page cache elsewhere. */
+	uint64_t pages = (uint64_t)vm.free_count + vm.inactive_count + vm.purgeable_count;
+	lua_pushnumber(L, (lua_Number)pages * (lua_Number)sysconf(_SC_PAGESIZE));
+	lua_pushnumber(L, (lua_Number)total);
+	return 2;
+#else
+	FILE *f = fopen("/proc/meminfo", "r");
+	if (f == NULL) {
+		lua_pushnil(L);
+		return 1;
+	}
+	char line[256];
+	unsigned long long available = 0, total = 0, kb;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) {
+			available = kb;
+		} else if (sscanf(line, "MemTotal: %llu kB", &kb) == 1) {
+			total = kb;
+		}
+	}
+	fclose(f);
+	if (available == 0 || total == 0) {
+		lua_pushnil(L);
+		return 1;
+	}
+	available *= 1024;
+	total *= 1024;
+	/* A container may allow less than the machine has: control groups v2, then v1. */
+	static const char *const limits[2][2] = {
+		{"/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"},
+		{"/sys/fs/cgroup/memory/memory.limit_in_bytes", "/sys/fs/cgroup/memory/memory.usage_in_bytes"},
+	};
+	for (int i = 0; i < 2; i++) {
+		unsigned long long limit = 0, used = 0;
+		FILE *lf = fopen(limits[i][0], "r");
+		FILE *uf = fopen(limits[i][1], "r");
+		/* An unlimited group reads as "max" (no number) or as a huge value. */
+		int limited = lf != NULL && uf != NULL && fscanf(lf, "%llu", &limit) == 1 && fscanf(uf, "%llu", &used) == 1 && limit < total;
+		if (lf != NULL) {
+			fclose(lf);
+		}
+		if (uf != NULL) {
+			fclose(uf);
+		}
+		if (limited) {
+			unsigned long long left = limit > used ? limit - used : 0;
+			available = left < available ? left : available;
+			total = limit;
+			break;
+		}
+	}
+	lua_pushnumber(L, (lua_Number)available);
+	lua_pushnumber(L, (lua_Number)total);
+	return 2;
+#endif
+}
+
+/*
+ * wait(pid, milliseconds) blocks until the copy from fork ends and returns its exit code. With a
+ * time limit it returns nil when the copy is still running by then, and wait can be called again.
+ */
+static int l_wait(lua_State *L) {
+	pid_t pid = (pid_t)luaL_checkinteger(L, 1);
+	int status = 0;
+	if (!lua_isnoneornil(L, 2)) {
+		/* waitpid has no time limit of its own, so poll. */
+		lua_Integer left = luaL_checkinteger(L, 2);
+		for (;;) {
+			pid_t done = waitpid(pid, &status, WNOHANG);
+			if (done == pid) {
+				break;
+			}
+			if (done < 0 && errno != EINTR) {
+				return push_errno(L);
+			}
+			if (left <= 0) {
+				lua_pushnil(L);
+				return 1;
+			}
+			usleep(5000);
+			left -= 5;
+		}
+		lua_pushinteger(L, WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status));
+		return 1;
+	}
+	while (waitpid(pid, &status, 0) < 0) {
+		if (errno != EINTR) {
+			return push_errno(L);
+		}
+	}
+	lua_pushinteger(L, WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status));
+	return 1;
+}
+
+/* kill(pid) stops the copy from fork; wait still has to collect it. */
+static int l_kill(lua_State *L) {
+	kill((pid_t)luaL_checkinteger(L, 1), SIGKILL);
+	return 0;
+}
+
+/*
+ * fork() continues this process in a copy of itself that shares its memory until either writes
+ * to it: it returns 0 in the copy and the copy's process id for wait in the original.
+ */
+static int l_fork(lua_State *L) {
+	fflush(NULL);
+	pid_t pid = fork();
+	if (pid < 0) {
+		lua_pushnil(L);
+		return 1;
+	}
+	lua_pushinteger(L, (lua_Integer)pid);
+	return 1;
+}
+
+/* exit(code) ends the process at once: nothing is flushed, which a copy made by fork must not do. */
+static int l_exit(lua_State *L) {
+	_exit((int)luaL_optinteger(L, 1, 0));
+	return 0;
+}
+
+static int l_getpid(lua_State *L) {
+	lua_pushinteger(L, (lua_Integer)getpid());
+	return 1;
+}
+
+static void *watch_parent(void *arg) {
+	pid_t parent = (pid_t)(intptr_t)arg;
+	/* A process whose parent ended is adopted, which changes its parent id. */
+	while (getppid() == parent) {
+		usleep(250000);
+	}
+	_exit(1);
+	return NULL;
+}
+
+/* watchparent(pid) ends this process soon after its parent pid ends, so no copy is orphaned. */
+static int l_watchparent(lua_State *L) {
+	pid_t parent = (pid_t)luaL_checkinteger(L, 1);
+	pthread_t thread;
+	if (pthread_create(&thread, NULL, watch_parent, (void *)(intptr_t)parent) == 0) {
+		pthread_detach(thread);
+	}
+	return 0;
+}
+
 static int l_enablevt(lua_State *L) {
 	(void)L;
 	return 0;
@@ -860,6 +1157,13 @@ static const luaL_Reg funcs[] = {
 	{"symlink", l_symlink},
 	{"utimes", l_utimes},
 	{"cpucount", l_cpucount},
+	{"memory", l_memory},
+	{"fork", l_fork},
+	{"exit", l_exit},
+	{"wait", l_wait},
+	{"kill", l_kill},
+	{"getpid", l_getpid},
+	{"watchparent", l_watchparent},
 	{"enablevt", l_enablevt},
 	{"setbinary", l_setbinary},
 	{"setmemlimit", l_setmemlimit},

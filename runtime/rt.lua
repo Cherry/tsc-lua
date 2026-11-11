@@ -37,10 +37,18 @@ rt.I64, rt.U64 = I64, U64
 -- it cut Excalidraw's peak from 9 to 7.6 GB at the same speed.
 collectgarbage('setpause', tonumber(os.getenv('TSCLUA_GC_PAUSE') or '') or 200)
 collectgarbage('setstepmul', tonumber(os.getenv('TSCLUA_GC_STEPMUL') or '') or 400)
+-- TSCLUA_GC_YOUNG=<megabytes> collects only young objects from the start (see docs/RUNTIME.md),
+-- every time that much was allocated. It is for testing that mode: old garbage is never freed.
+local youngMegabytes = tonumber(os.getenv('TSCLUA_GC_YOUNG') or '')
+if youngMegabytes then
+	collectgarbage('young', youngMegabytes * 1024)
+end
 
 -- LuaJIT's default trace limits suit small programs, and the compiler is 19 MB of Lua: without
 -- room for more traces the JIT flushes them all and starts over. Higher hot counts keep it from
--- recording code that runs only a few times. TSCLUA_JIT_OPT replaces these (space separated
+-- recording code that runs only a few times. Machine code areas stay small (64 KB): every trace
+-- switches its whole area between writable and executable, which costs more than compiling a
+-- small trace when the area is megabytes. TSCLUA_JIT_OPT replaces these (space separated
 -- jit.opt.start parameters) and TSCLUA_JIT=off runs the interpreter only.
 if os.getenv('TSCLUA_JIT') == 'off' then
 	jit.off()
@@ -57,7 +65,7 @@ else
 			'maxtrace=65000',
 			'maxrecord=16000',
 			'maxmcode=524288',
-			'sizemcode=4096',
+			'sizemcode=64',
 			'maxside=400',
 			'maxsnap=1000',
 			'hotloop=1000',
@@ -2149,9 +2157,9 @@ end
 
 -- indexByteFrom and indexFrom search s[i:e] (e nil: to the end). With an end, the search
 -- stays within it: string.find has no end bound, and searching the rest of a source file for
--- every short substring is quadratic.
+-- every short substring is quadratic. An end at the end of s is no bound at all.
 function rt.indexByteFrom(s, i, c, e)
-	if e then
+	if e and e < #s then
 		for j = i + 1, e do
 			if sbyte(s, j) == c then
 				return j - 1 - i
@@ -2168,7 +2176,7 @@ end
 
 function rt.indexFrom(s, i, sub, e)
 	local j
-	if e then
+	if e and e < #s then
 		j = sfind(ssub(s, i + 1, e), sub, 1, true)
 		if j == nil then
 			return -1
@@ -2180,6 +2188,50 @@ function rt.indexFrom(s, i, sub, e)
 		return -1
 	end
 	return j - 1 - i
+end
+
+-- lastIndexTo is strings.LastIndex over s[i:e] (e nil: to the end), without copying that range.
+function rt.lastIndexTo(s, i, sub, e)
+	local n = #sub
+	local last = (e or #s) - n
+	if n == 0 then
+		return last - i
+	end
+	local first = sbyte(sub, 1)
+	for j = last, i, -1 do
+		-- Comparing the first byte avoids making a substring at most positions.
+		if sbyte(s, j + 1) == first and (n == 1 or ssub(s, j + 1, j + n) == sub) then
+			return j - i
+		end
+	end
+	return -1
+end
+
+-- A capped string field (transpiler/views.go) keeps its whole string under k and, while it is
+-- cut to a prefix, that prefix's length under nk. capstr reads a cut field as a plain string,
+-- which makes the cut real, so the copy happens once.
+function rt.capstr(t, k, nk)
+	local s = ssub(t[k], 1, t[nk])
+	t[k], t[nk] = s, nil
+	return s
+end
+
+function rt.capread(t, k, nk)
+	if t[nk] == nil then
+		return t[k]
+	end
+	return rt.capstr(t, k, nk)
+end
+
+-- capset returns the string and length to store in a capped field for the view s[o:o+n].
+function rt.capset(s, o, n)
+	if o ~= 0 then
+		return ssub(s, o + 1, o + n), nil
+	end
+	if n == #s then
+		return s, nil
+	end
+	return s, n
 end
 
 -- anyClass is the Lua character class for an ASCII set, false for other sets.
@@ -2210,7 +2262,7 @@ function rt.indexAnyFrom(s, i, chars, e)
 		return rt.import('go.strings').IndexAny(ssub(s, i + 1, e), chars)
 	end
 	local j
-	if e then
+	if e and e < #s then
 		j = sfind(ssub(s, i + 1, e), class)
 		if j == nil then
 			return -1

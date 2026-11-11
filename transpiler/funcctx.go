@@ -195,6 +195,10 @@ func (fc *funcCtx) structFieldList(s *types.Struct) string {
 			ft = vt
 		}
 		parts = append(parts, fmt.Sprintf("{%s, %s, %s, %d%s}", info.luaKey(), fc.typeExpr(ft), luaString(f.Name()), flags, tag))
+		// A capped field (views.go) keeps its length under a second key, nil when not cut: a pointer type.
+		if fc.e.c.cappedFields[f.Origin()] {
+			parts = append(parts, fmt.Sprintf("{%s, rt.ptrTo(rt.int), %s, 0}", luaString(capKey(f)), luaString(capKey(f))))
+		}
 	}
 	return "{" + strings.Join(parts, ", ") + "}"
 }

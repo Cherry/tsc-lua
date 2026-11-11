@@ -33,11 +33,19 @@ func (fc *funcCtx) call(call *ast.CallExpr) string {
 	}
 	sig, _ := coreType(fc.typeOf(call.Fun)).(*types.Signature)
 	args := fc.args(call, sig)
+	if viewed, ok := fc.viewArgs(call, args); ok {
+		return fc.callWithInline(call, viewed, false)
+	}
 	return fc.callWith(call, args)
 }
 
 // callWith renders the call with pre-rendered argument code.
 func (fc *funcCtx) callWith(call *ast.CallExpr, args []string) string {
+	return fc.callWithInline(call, args, true)
+}
+
+// callWithInline is callWith, inlining the callee only when inline is set.
+func (fc *funcCtx) callWithInline(call *ast.CallExpr, args []string, inline bool) string {
 	fun := unparen(call.Fun)
 	// Method call, possibly with explicit type arguments for a generic method (x.m[T](...)).
 	methodFun := fun
@@ -50,6 +58,7 @@ func (fc *funcCtx) callWith(call *ast.CallExpr, args []string) string {
 	if se, ok := methodFun.(*ast.SelectorExpr); ok {
 		if sel := fc.info().Selections[se]; sel != nil && sel.Kind() == types.MethodVal {
 			mt := fc.methodTargetOf(se, sel)
+			mt.noInline = !inline
 			return fc.formatMethodCall(mt, args)
 		}
 	}
@@ -79,8 +88,10 @@ func (fc *funcCtx) callWith(call *ast.CallExpr, args []string) string {
 				}
 			}
 			all := append(targs, args...)
-			if code, ok := fc.e.c.inlineCall(fn, all, fc); ok {
-				return code
+			if inline {
+				if code, ok := fc.e.c.inlineCall(fn, all, fc); ok {
+					return code
+				}
 			}
 			return fmt.Sprintf("%s(%s)", fc.funcRef(fn), strings.Join(all, ", "))
 		}
