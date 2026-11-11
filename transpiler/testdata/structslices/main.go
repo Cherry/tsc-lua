@@ -41,4 +41,15 @@ func main() {
 	arrClone := slices.Clone(arrs)
 	arrClone[0][0] = 99
 	fmt.Println(arrs[0][0], arrClone[0][0])
+
+	// Reslicing into capacity that append grew exposes zero values.
+	// Growing from 2 to 3 doubles the capacity, so one more slot always fits.
+	spare := append(make([]Info, 0, 2), Info{1, "a"}, Info{2, "b"})
+	spare = append(spare, Info{3, "c"})
+	spare = spare[:len(spare)+1]
+	spare[3].Flags++
+	fmt.Println(spare[3])
+	spareInts := append(make([]int, 0, 2), 1, 2)
+	spareInts = append(spareInts, 3)
+	fmt.Println(spareInts[:4][3]+1, spareInts[1:4:4][2]+1)
 }

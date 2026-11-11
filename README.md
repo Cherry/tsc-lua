@@ -15,11 +15,11 @@ This is a for-fun project. It is much slower than the Go compiler; see [Benchmar
 
 ## Status
 
-- **Same results.** All 13,727 configurations of TypeScript's compiler and conformance tests pass, comparing every baseline (errors, emitted JavaScript, declarations, source maps, types and symbols) byte for byte. See [Conformance](#conformance).
+- **Same results.** All 13,811 configurations of TypeScript's compiler and conformance tests pass, comparing every baseline (errors, emitted JavaScript, declarations, source maps, types and symbols) byte for byte. See [Conformance](#conformance).
 - **Real projects.** On the [benchmark apps](#benchmarks) tsc-lua reports the same diagnostics as `tsc` 7.
 - **Slower.** About 33 times slower than `tsc` 7 on real projects, and it needs about 3.2 times the memory. See [Benchmarks](#benchmarks).
 
-tsc-lua is pinned to [microsoft/TypeScript@2e9fb00](https://github.com/microsoft/TypeScript/commit/2e9fb00f5f5c9186d09aabd78cced5ce2497456d) (2026-10-17), the commit `typescript@7.1.0-dev.20261017.1` was built from. `tsc-lua --version` prints `7.1.0-dev`. When tsc-lua and that `typescript` build disagree, that is a tsc-lua bug; when they agree, it is upstream TypeScript behavior.
+tsc-lua is pinned to [microsoft/TypeScript@f797316](https://github.com/microsoft/TypeScript/commit/f7973164a5f079a2d8b88d0fdb39347222549124) (2026-11-06), the commit `typescript@7.1.0-dev.20261107.1` was built from. `tsc-lua --version` prints `7.1.0-dev`. When tsc-lua and that `typescript` build disagree, that is a tsc-lua bug; when they agree, it is upstream TypeScript behavior.
 
 ## Install
 
@@ -69,17 +69,17 @@ tsc-lua runs typescript-go's own compiler test runner (`internal/testrunner`), t
 
 | Baseline | What is compared | Passing |
 | --- | --- | --- |
-| `error` | Diagnostics, as printed by `tsc` | 13,727 / 13,727 |
-| `output` | Emitted JavaScript and declarations | 13,653 / 13,653 |
-| `sourcemap`, `sourcemap_record` | Source maps and their decoded mappings | 13,727 / 13,727 each |
-| `type`, `symbol` | The type and symbol of every expression and name | 13,020 / 13,020 each |
-| `union_ordering` | Order of union members | 13,727 / 13,727 |
-| `content_mapper` | Content mapper (embedded file) handling | 13,727 / 13,727 |
-| `source_file_parent_pointers` | AST parent pointers | 13,727 / 13,727 |
+| `error` | Diagnostics, as printed by `tsc` | 13,811 / 13,811 |
+| `output` | Emitted JavaScript and declarations | 13,736 / 13,736 |
+| `sourcemap`, `sourcemap_record` | Source maps and their decoded mappings | 13,811 / 13,811 each |
+| `type`, `symbol` | The type and symbol of every expression and name | 13,081 / 13,081 each |
+| `union_ordering` | Order of union members | 13,811 / 13,811 |
+| `content_mapper` | Content mapper (embedded file) handling | 13,811 / 13,811 |
+| `source_file_parent_pointers` | AST parent pointers | 13,811 / 13,811 |
 | `module_resolution` | Module resolution traces | 162 / 162 |
-| **All** | **13,727 test configurations, 122,217 baselines** | **100%** |
+| **All** | **13,811 test configurations, 122,926 baselines** | **100%** |
 
-A test configuration is a test file with one combination of its `// @option: a, b` variations. 1,728 configurations are skipped exactly as typescript-go skips them (options TypeScript 7 removed, such as `module: umd`). The full run takes about half an hour on 10 processes: `node scripts/conformance.ts`.
+A test configuration is a test file with one combination of its `// @option: a, b` variations. 1,729 configurations are skipped exactly as typescript-go skips them (options TypeScript 7 removed, such as `module: umd`). The full run takes about half an hour on 10 processes: `node scripts/conformance.ts`.
 
 The transpiler has its own tests (`transpiler/testdata/`): Go programs whose output under tsc-lua must match `go run`.
 

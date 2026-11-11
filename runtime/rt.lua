@@ -2428,7 +2428,22 @@ function rt.sparts(s)
 	return s[1], s[2], s[3]
 end
 
-function rt.slice(s, lo, hi)
+-- Go zeroes the spare capacity append grows into, but grow leaves it nil (zeroing there would
+-- double struct allocations), so a reslice past len fills the slots it exposes with z.
+local function zeroSpare(s, hi, z)
+	local a, o = s[1], s[2]
+	for i = o + s[3], o + hi - 1 do
+		if a[i] == nil then
+			if type(z) == 'function' then
+				a[i] = z()
+			else
+				a[i] = z
+			end
+		end
+	end
+end
+
+function rt.slice(s, lo, hi, z)
 	lo = lo or 0
 	if s == nil then
 		if lo == 0 and (hi == nil or hi == 0) then
@@ -2442,16 +2457,22 @@ function rt.slice(s, lo, hi)
 	if lo < 0 or hi < lo or hi > s[4] then
 		boundsPanic(sformat('slice bounds out of range [%d:%d] with capacity %d', lo, hi, s[4]))
 	end
+	if z ~= nil and hi > s[3] then
+		zeroSpare(s, hi, z)
+	end
 	return { s[1], s[2] + lo, hi - lo, s[4] - lo }
 end
 
-function rt.slice3(s, lo, hi, max)
+function rt.slice3(s, lo, hi, max, z)
 	lo = lo or 0
 	if s == nil then
 		return nil
 	end
 	if lo < 0 or hi < lo or max < hi or max > s[4] then
 		boundsPanic('slice bounds out of range')
+	end
+	if z ~= nil and hi > s[3] then
+		zeroSpare(s, hi, z)
 	end
 	return { s[1], s[2] + lo, hi - lo, max - lo }
 end
@@ -2641,7 +2662,7 @@ function rt.pushstr(s, str)
 	return rt.pushslice(s, #str > 0 and rt.strbytes(str) or nil)
 end
 
-function rt.reslice(s, lo, hi)
+function rt.reslice(s, lo, hi, z)
 	if s == nil then
 		return rt.slice(s, lo, hi)
 	end
@@ -2652,19 +2673,25 @@ function rt.reslice(s, lo, hi)
 	if lo < 0 or hi < lo or hi > s[4] then
 		boundsPanic(sformat('slice bounds out of range [%d:%d] with capacity %d', lo, hi, s[4]))
 	end
+	if z ~= nil and hi > s[3] then
+		zeroSpare(s, hi, z)
+	end
 	s[2] = s[2] + lo
 	s[3] = hi - lo
 	s[4] = s[4] - lo
 	return s
 end
 
-function rt.reslice3(s, lo, hi, max)
+function rt.reslice3(s, lo, hi, max, z)
 	if s == nil then
 		return nil
 	end
 	lo = lo or 0
 	if lo < 0 or hi < lo or max < hi or max > s[4] then
 		boundsPanic('slice bounds out of range')
+	end
+	if z ~= nil and hi > s[3] then
+		zeroSpare(s, hi, z)
 	end
 	s[2] = s[2] + lo
 	s[3] = hi - lo
