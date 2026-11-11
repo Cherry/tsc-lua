@@ -19,7 +19,7 @@ This is a for-fun project. It is much slower than the Go compiler; see [Benchmar
 - **Real projects.** On the [benchmark apps](#benchmarks) tsc-lua reports the same diagnostics as `tsc` 7.
 - **Slower.** About 33 times slower than `tsc` 7 on real projects, and it needs about 3.2 times the memory. See [Benchmarks](#benchmarks).
 
-tsc-lua is pinned to [microsoft/TypeScript@2e9fb00](https://github.com/microsoft/TypeScript/commit/2e9fb00f5f5c9186d09aabd78cced5ce2497456d) (2026-10-17), the commit `typescript@7.1.0-dev.20261017.1` was built from. `tsc-lua --version` prints `7.1.0-dev`. When tsc-lua and that `typescript` build disagree, that is a tsc-lua bug; when they agree, it is upstream TypeScript behavior.
+tsc-lua is pinned to [microsoft/TypeScript@f797316](https://github.com/microsoft/TypeScript/commit/f7973164a5f079a2d8b88d0fdb39347222549124) (2026-11-06), the commit `typescript@7.1.0-dev.20261107.1` was built from. `tsc-lua --version` prints `7.1.0-dev`. When tsc-lua and that `typescript` build disagree, that is a tsc-lua bug; when they agree, it is upstream TypeScript behavior.
 
 ## Install
 
