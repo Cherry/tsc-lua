@@ -616,6 +616,14 @@ typedef struct GCState {
 #if LJ_64
   MRef lightudseg;	/* Upper bits of lightuserdata segments. */
 #endif
+  /* tsc-lua: young mode, see lj_gc.c. */
+  MSize young;		/* Nonzero while only young objects are collected. */
+  MSize youngstrnum;	/* Number of strings made since the last collection. */
+  MSize youngstrsz;	/* Size of the vector of those strings. */
+  MRef youngstr;	/* Vector of strings made since the last collection. */
+  GCSize nursery;	/* Memory to allocate between young collections. */
+  GCRef oldroot;	/* First old object in the root list. */
+  GCRef oldudata;	/* First old userdata. */
 } GCState;
 
 /* String interning state. */
